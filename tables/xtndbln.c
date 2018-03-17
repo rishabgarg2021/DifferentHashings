@@ -1,0 +1,374 @@
+/* * * * * * * * *
+ * Dynamic hash table using extendible hashing with multiple keys per bucket,
+ * resolving collisions by incrementally growing the hash table
+ *
+ * created for COMP20007 Design of Algorithms - Assignment 2, 2017
+ * by ...
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <time.h>
+#define rightmostnbits(n, x) (x) & ((1 << (n)) - 1)
+#include "xtndbln.h"
+#include <math.h>
+// a bucket stores an array of keys
+// it also knows how many bits are shared between possible keys, and the first
+// table address that references it
+typedef struct xtndbln_bucket {
+    int id;			// a unique id for this bucket, equal to the first address
+  				    // in the table which points to it
+    int depth;		// how many hash value bits are being used by this bucket
+    int nkeys;		// number of keys currently contained in this bucket
+    int64 *keys;	// the keys stored in this bucket
+} Bucket;
+
+// a hash table is an array of slots pointing to buckets holding up to
+// bucketsize keys, along with some information about the number of hash value
+// bits to use for addressing
+struct xtndbln_table {
+    Bucket **buckets;	// array of pointers to buckets
+    int size;			// how many entries in the table of pointers (2^depth)
+    int depth;			// how many bits of the hash value to use (log2(size))
+    int bucketsize;		// maximum number of keys per bucket
+    int total_insertions;//calculates the total insertions in total.
+    int time;
+    int average;
+   // int same_addresses; //how many buckets exists which points to same buckets.
+    
+};
+
+
+//***************************Function prototypes******************************//
+void initialize_sub_buckets(XtndblNHashTable *table);
+static void double_table(XtndblNHashTable *table);
+Bucket* new_bucket(XtndblNHashTable *table,int new_first_address,int new_depth);
+void free_bucket(XtndblNHashTable *table,Bucket*bucket);
+void reinsert(XtndblNHashTable *table,int64 key);
+static void split_bucket(XtndblNHashTable *table, int address);
+//****************************************************************************//
+
+
+
+//allocated the memory to buckets and initializing number og keys to 0
+//and malloc the space to keys array. and keeping inital depth =log2(tablesize)
+void initialize_sub_buckets(XtndblNHashTable *table){
+	int i=0;
+	table->buckets[i]=malloc(sizeof(Bucket));
+	table->buckets[i]->depth=0;//initially check wth bits1.
+	table->buckets[i]->id=i;
+	table->buckets[i]->nkeys=0;
+	table->buckets[i]->keys=malloc(table->bucketsize* 
+							sizeof(table->buckets[i]->keys));
+  
+    
+    
+}
+
+
+//it doubles the table by copying all the pointers with same pattern 
+//it malloc the space to buckets and keys of each index which is made new.
+static void double_table(XtndblNHashTable *table){
+    int size = table->size*2;
+    assert(size < MAX_TABLE_SIZE && "error: table has grown too large!");
+    table->buckets = realloc(table->buckets, (sizeof *table->buckets) * size);
+    assert(table->buckets);
+    int i;
+    int j;
+    for (j = 0; j < table->size; j++) {
+        Bucket *bucket = malloc(sizeof *bucket);
+        table->buckets[j+table->size]=bucket;
+        table->buckets[j+table->size]->keys=malloc(sizeof
+        									(bucket->keys)*table->bucketsize);
+    }
+    for (i = 0; i < table->size; i++) {
+        table->buckets[table->size + i] = table->buckets[i];
+        
+        
+    }
+    //new size and depth are changed accordingly.
+    table->size = size;
+    table->depth++;
+}
+
+//makes a new bucket with depth and id as parameter.
+Bucket* new_bucket(XtndblNHashTable *table,int new_first_address,int new_depth){
+    Bucket *bucket = malloc(sizeof *bucket);
+    bucket->id=new_first_address;
+    bucket->depth=new_depth;
+    bucket->nkeys=0;
+    bucket->keys=malloc(sizeof(bucket->keys)*table->bucketsize);
+    return bucket;
+}
+
+
+//it just makes n keys zero and keys malloc again to avoid copying values to 
+//same key value.
+void free_bucket(XtndblNHashTable *table,Bucket*bucket){
+    bucket->nkeys=0;
+    Bucket *newbucket;
+    newbucket=bucket;
+    
+    bucket->keys=NULL;
+    
+    
+    bucket->keys=malloc(sizeof(newbucket->keys)* table->bucketsize);
+}
+
+
+//it insert the value at given address and increase the number of keys.
+void reinsert(XtndblNHashTable *table,int64 key){
+    int address = rightmostnbits(table->depth, h1(key));
+    table->buckets[address]->keys[table->buckets[address]->nkeys]=key;
+    table->buckets[address]->nkeys++;
+    
+}
+
+
+
+static void split_bucket(XtndblNHashTable *table, int address) {
+    
+    
+    if(table->buckets[address]->depth==table->depth){
+        double_table(table);
+    }
+    //create new bucket and update all values into it into new bucket.
+    /*Bucket *bucket = table->buckets[address];
+     int depth = bucket->depth;
+     int first_address = bucket->id;
+     
+     int new_depth = depth + 1;
+     bucket->depth = new_depth;*/
+    Bucket* bucket=table->buckets[address];
+    int depth =bucket->depth;
+    int first_address = bucket->id;
+    int new_depth=depth+1;
+    bucket->depth=new_depth;
+    int new_first_address = 1 << depth | first_address;
+    Bucket *newbucket = new_bucket(table,new_first_address, new_depth);
+    int bit_address = rightmostnbits(depth, first_address);
+    // THIRD,
+    // redirect every second address pointing to this bucket to the new bucket
+    // construct addresses by joining a bit 'prefix' and a bit 'suffix'
+    // (defined below)
+    
+    // suffix: a 1 bit followed by the previous bucket bit address
+    
+    int suffix = (1 << depth) | bit_address;
+    
+    // prefix: all bitstrings of length equal to the difference between the new
+    // bucket depth and the table depth
+    // use a for loop to enumerate all possible prefixes less than maxprefix:
+    int maxprefix = 1 << (table->depth - new_depth);
+    
+    int prefix;
+    for (prefix = 0; prefix < maxprefix; prefix++) {
+        
+        // construct address by joining this prefix and the suffix
+        int a = (prefix << new_depth) | suffix;
+        
+        // redirect this table entry to point at the new bucket
+        table->buckets[a] = newbucket;
+    }
+    //stores the values in temp array of that bucket which need to rehash
+    //according to new table depth.
+    int64 *temp_array;
+    temp_array=bucket->keys;
+    
+    int total_elements=bucket->nkeys;
+    free_bucket(table,bucket);
+    int i;
+    
+    
+    for(i=0;i<total_elements;i++){
+    	//
+    	//printf("\ntemp_array=%d\n",temp_array[i]);
+        reinsert(table,temp_array[i]);
+    }
+    
+}
+
+// initialise an extendible hash table with 'bucketsize' keys per bucket
+XtndblNHashTable *new_xtndbln_hash_table(int bucketsize) {
+    XtndblNHashTable *table=malloc(sizeof *table);
+    assert(table);
+    table->time=0;
+    table->average=0;
+    table->bucketsize=bucketsize;
+    table->total_insertions=0;
+    table->size=1;
+   // table->same_addresses=0;
+    table->depth=0;
+    table->buckets=malloc(table->size*(sizeof table->buckets));
+    initialize_sub_buckets(table);
+    
+    return table;
+}
+
+
+// free all memory associated with 'table'
+void free_xtndbln_hash_table(XtndblNHashTable *table) {
+    assert(table);
+    
+    // loop backwards through the array of pointers, freeing buckets only as we
+    // reach their first reference
+    // (if we loop through forwards, we wouldn't know which reference was last)
+    int i;
+    for (i = table->size-1; i >= 0; i--) {
+        if (table->buckets[i]->id == i) {
+            free(table->buckets[i]->keys);
+            free(table->buckets[i]);
+        }
+    }
+    
+    // free the array of bucket pointers
+    free(table->buckets);
+    
+    // free the table struct itself
+    free(table);
+}
+
+
+// insert 'key' into 'table', if it's not in there already
+// returns true if insertion succeeds, false if it was already in there
+bool xtndbln_hash_table_insert(XtndblNHashTable *table, int64 key) {
+    assert(table);
+    int hash = h1(key);
+    int address = rightmostnbits(table->depth, hash);
+    int start_time = clock(); // start timing
+
+    if(xtndbln_hash_table_lookup(table,key)){
+    	table->time += clock() - start_time; // add time elapsed
+        return false;
+        
+    }
+    
+    //if we have occupied all of keys in key hash address ,we either double
+    //it or split it,mentioned in split_bucket.
+    while (table->buckets[address]->nkeys==table->bucketsize) {
+        split_bucket(table, address);
+        
+        // and recalculate address .give n bits of depth of hash value.
+        //because we might now need more bits
+        address = rightmostnbits(table->depth, hash);
+    }
+    //we got space for a key to get insert in
+    int current_slot=table->buckets[address]->nkeys;
+    table->buckets[address]->keys[current_slot]=key;
+    table->buckets[address]->nkeys++;
+    table->time += clock() - start_time; // add time elapsed
+    return true;
+}
+
+
+// lookup whether 'key' is inside 'table'
+// returns true if found, false if not
+bool xtndbln_hash_table_lookup(XtndblNHashTable *table, int64 key) {
+    
+    int address = rightmostnbits(table->depth, h1(key));
+    
+    // look for the keys in that bucket (unless it's empty)
+    int present_keys=table->buckets[address]->nkeys;
+    int i;
+    for(i=0;i<present_keys;i++){
+        if(table->buckets[address]->keys[i] == key){
+            return true;
+        }
+    }
+    return false;
+   
+}
+
+// print the contents of 'table' to stdout
+void xtndbln_hash_table_print(XtndblNHashTable *table) {
+    assert(table);
+    printf("--- table size: %d\n", table->size);
+    
+    // print header
+    printf("  table:               buckets:\n");
+    printf("  address | bucketid   bucketid [key]\n");
+    
+    // print table and buckets
+    int i;
+    for (i = 0; i < table->size; i++) {
+        // table entry
+        printf("%9d | %-9d ", i, table->buckets[i]->id);
+        
+        // if this is the first address at which a bucket occurs, print it now
+        if (table->buckets[i]->id == i) {
+            printf("%9d ", table->buckets[i]->id);
+            //calculating the total number of insertions made.
+           
+            // print the bucket's contents
+            printf("[");
+            for(int j = 0; j < table->bucketsize; j++) {
+                if (j < table->buckets[i]->nkeys) {
+                    printf(" %llu", table->buckets[i]->keys[j]);
+                } else {
+                    printf(" -");
+                }
+            }
+            printf(" ]");
+        }
+        // end the line
+        printf("\n");
+    }
+    
+    
+    printf("--- end table ---\n");
+   
+}
+int calculate_stats(XtndblNHashTable *table){
+	 int partial=0;
+	 int full=0;
+	 int i,j;
+    for (i = 0; i < table->size; i++) {
+       
+      
+        if (table->buckets[i]->id == i) {
+           
+            table->total_insertions=table->total_insertions+
+            						table->buckets[i]->nkeys;
+            
+            table->average=table->average+table->buckets[i]->nkeys;
+            if(table->buckets[i]->nkeys<table->bucketsize){
+            	//partial=partial+table->buckets[i]->nkeys;
+            	for(j = 0; j < table->bucketsize; j++) {
+					if (j < table->buckets[i]->nkeys) {
+						partial++;
+					} 
+					else {
+						partial++;
+					}
+            }
+            }
+            if(table->buckets[i]->nkeys==table->bucketsize){
+            		
+            		full=full+table->bucketsize;
+            }
+        }
+    }
+    return (partial+full);
+ 	
+}
+
+// print some statistics about 'table' to stdout
+void xtndbln_hash_table_stats(XtndblNHashTable *table) {
+	int different_table;
+    different_table=calculate_stats(table);
+    printf("\n%d\n",different_table);
+    //alpha=(((table->total_insertions)+0.0)/(table->size)+0.0)*table->bucketsize;
+    printf("total distinct insertions upto now = %d\n",table->total_insertions);
+    printf("table size = %d\n",table->size);
+    printf("each table has bucket of length = %d\n",table->bucketsize);
+    printf("table depth = %d\n",table->depth);
+    
+    printf("average keys in table of size %d and bucket length of %d = %.3f\n",
+           table->size,table->bucketsize,(((table->average+0.0)
+           	   /different_table))*table->bucketsize);
+    float seconds = table->time * 1.0 / CLOCKS_PER_SEC;
+	printf("CPU time spent: %.6f sec\n", seconds);
+	printf("CPU time spent: %d sec\n", table->time);
+  
+}
